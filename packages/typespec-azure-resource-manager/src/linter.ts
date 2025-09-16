@@ -12,6 +12,7 @@ import { interfacesRule } from "./rules/arm-resource-interfaces.js";
 import { armResourceInvalidActionVerbRule } from "./rules/arm-resource-invalid-action-verb.js";
 import { armResourceEnvelopeProperties } from "./rules/arm-resource-invalid-envelope-property.js";
 import { armResourceInvalidVersionFormatRule } from "./rules/arm-resource-invalid-version-format.js";
+import { armModelNameParameterSuffixRule } from "./rules/arm-model-name-parameter-suffix.js";
 import { armResourceKeyInvalidCharsRule } from "./rules/arm-resource-key-invalid-chars.js";
 import { armResourceNamePatternRule } from "./rules/arm-resource-name-pattern.js";
 import { armResourceOperationsRule } from "./rules/arm-resource-operation-response.js";
@@ -44,6 +45,7 @@ const rules = [
   armResourceEnvelopeProperties,
   armResourceInvalidVersionFormatRule,
   armResourceKeyInvalidCharsRule,
+  armModelNameParameterSuffixRule,
   armResourceNamePatternRule,
   armResourceOperationsRule,
   armResourcePathInvalidCharsRule,
