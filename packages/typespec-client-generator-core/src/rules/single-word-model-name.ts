@@ -325,6 +325,31 @@ function createClientNameCodeFix(
 /**
  * Create a codefix that uses resolveCodefixes to fetch AI suggestions
  * and present them as individual labeled options in the Ctrl+. menu.
+ *
+ * >>> This is where the Core PR change is used <<<
+ *
+ * The `resolveCodefixes` field below is the NEW API added by the Core PR
+ * (haiyuazhang/typespec#3). Without that PR, this field doesn't exist on
+ * the CodeFix interface and would be silently ignored.
+ *
+ * WHY we need the Core PR:
+ *
+ * The standard CodeFix API has a fixed `label` string — it's set when the
+ * warning is created (during compilation), long before the user presses
+ * Ctrl+.. There's no way to call AI at that point because:
+ *   1. The model visitor is synchronous — can't await an AI call
+ *   2. Even if we could, the AI call would run for EVERY model in EVERY
+ *      file on EVERY recompilation, not just when the user asks for fixes
+ *
+ * The Core PR adds `resolveCodefixes` which is called LATER — specifically
+ * in getCodeActions() (core/packages/compiler/src/server/serverlib.ts)
+ * when the user presses Ctrl+.. This is the right time to call AI because:
+ *   1. It only runs when the user explicitly asks for fixes
+ *   2. It's async — can await the AI response
+ *   3. It can return MULTIPLE codefixes, each with a descriptive label
+ *      showing the actual AI-suggested name
+ *   4. The results are cached (Promise-based) so repeated Ctrl+. doesn't
+ *      make duplicate AI calls
  */
 function createAiClientNameCodeFix(model: Model, host: CompilerHost, csharpName: string) {
   const namespaceName = model.namespace ? getNamespaceFullName(model.namespace) : "";
@@ -337,6 +362,19 @@ function createAiClientNameCodeFix(model: Model, host: CompilerHost, csharpName:
       // Fallback if resolveCodefixes wasn't called (e.g., CLI usage)
       return [];
     }) as CodeFix["fix"],
+    // >>> resolveCodefixes: NEW API from Core PR (haiyuazhang/typespec#3) <<<
+    //
+    // When the user presses Ctrl+., the compiler's getCodeActions() checks for
+    // this field. If present, it calls this function and uses the returned
+    // CodeFix[] to populate the quickfix menu — each with its own label.
+    //
+    // This is handled in: core/packages/compiler/src/server/serverlib.ts
+    //   getCodeActions() → if (fix.resolveCodefixes) → await fix.resolveCodefixes()
+    //   → cache result → return resolved fixes as separate CodeAction entries
+    //
+    // Without the Core PR, this field would be ignored and the user would only
+    // see the static label "AI: Suggest multi-word names..." with no actual
+    // AI suggestions in the menu.
     resolveCodefixes: async () => {
       console.log("@@@ resolveCodefixes called — fetching AI suggestions");
       const suggestions = await fetchAiNameSuggestions(csharpName, namespaceName, modelSource);
