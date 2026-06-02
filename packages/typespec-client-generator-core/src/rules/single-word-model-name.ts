@@ -1,3 +1,95 @@
+/**
+ * single-word-model-name linter rule
+ *
+ * Flags model names that are a single PascalCase word (e.g. "Document", "Format")
+ * because they risk colliding with .NET BCL or third-party types.
+ *
+ * The fix uses AI (via vscode.lm) to suggest multi-word replacements and writes
+ * a @@clientName override to client.tsp. Here's the full flow:
+ *
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │  COMPILATION (happens when you open/edit a .tsp file)               │
+ * │                                                                     │
+ * │  1. TypeSpec compiles main.tsp                                      │
+ * │  2. Linter runs the model visitor for each model                    │
+ * │  3. getLibraryName(ctx, model, "csharp") gets the C#-resolved name  │
+ * │     (respects @clientName overrides from client.tsp if imported)    │
+ * │  4. If the name is a single word → report warning + attach codefix  │
+ * │     The codefix has resolveCodefixes (but it's NOT called yet)      │
+ * │  5. Yellow squiggly appears under the model name                    │
+ * └──────────────────────────────────────────────────────────────────────┘
+ *                              │
+ *                    User presses Ctrl+.
+ *                              │
+ *                              ▼
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │  GET CODE ACTIONS (VS Code → Language Server)                       │
+ * │                                                                     │
+ * │  6. VS Code sends textDocument/codeAction request                   │
+ * │  7. Server sees our codefix has resolveCodefixes → calls it         │
+ * │  8. resolveCodefixes calls fetchAiNameSuggestions:                   │
+ * │                                                                     │
+ * │     Language Server                          VS Code Extension      │
+ * │     ──────────────                          ──────────────────      │
+ * │     globalThis.lspConnection                                        │
+ * │       .sendRequest("custom/chatCompletion") ──────────►             │
+ * │                                              sendLmChatRequest()    │
+ * │                                              vscode.lm              │
+ * │                                                .selectChatModels()  │
+ * │                                              model.sendRequest()    │
+ * │                                              ◄────── AI response    │
+ * │     ◄─── returns "TableDocument\n             (5 suggestions)       │
+ * │          StorageDocument\n..."                                       │
+ * │                                                                     │
+ * │  9. resolveCodefixes creates 5 CodeFix objects, each with:          │
+ * │     - A descriptive label: "Rename to 'TableDocument' in client.tsp"│
+ * │     - A fix() function that writes @@clientName to client.tsp       │
+ * │  10. Server caches the result (Promise-based, so concurrent         │
+ * │      requests share the same AI call — no duplicates)               │
+ * │  11. Returns 5 code actions to VS Code                              │
+ * └──────────────────────────────────────────────────────────────────────┘
+ *                              │
+ *                              ▼
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │  QUICK FIX MENU (what the user sees)                                │
+ * │                                                                     │
+ * │  ┌────────────────────────────────────────────┐                     │
+ * │  │ 💡 Rename to 'TableDocument' in client.tsp │                     │
+ * │  │    Rename to 'StorageDocument' in client.tsp│                    │
+ * │  │    Rename to 'TableStorageDocument' ...     │                    │
+ * │  │    Rename to 'DocumentEntity' ...           │                    │
+ * │  │    Rename to 'TableDocumentEntity' ...      │                    │
+ * │  └────────────────────────────────────────────┘                     │
+ * │                                                                     │
+ * │  12. User picks one (e.g. "TableDocument")                          │
+ * └──────────────────────────────────────────────────────────────────────┘
+ *                              │
+ *                              ▼
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │  RESOLVE CODE ACTION (VS Code → Language Server)                    │
+ * │                                                                     │
+ * │  13. VS Code sends codeAction/resolve for "TableDocument"           │
+ * │  14. Server finds the CodeFix in resolvedCodefixMap by ID           │
+ * │  15. Calls fix() which:                                             │
+ * │      a. Reads existing client.tsp (or creates empty)                │
+ * │      b. Adds import + using lines if missing                        │
+ * │      c. Appends: @@clientName(Azure.Storage.Tables.Document,        │
+ * │                               "TableDocument", "csharp");           │
+ * │  16. Returns the edit to VS Code                                    │
+ * └──────────────────────────────────────────────────────────────────────┘
+ *                              │
+ *                              ▼
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │  APPLY (VS Code)                                                    │
+ * │                                                                     │
+ * │  17. VS Code creates client.tsp if needed (ignoreIfExists)          │
+ * │  18. Writes the @@clientName line                                   │
+ * │  19. Language server recompiles → getLibraryName now returns         │
+ * │      "TableDocument" (multi-word) → warning disappears ✅            │
+ * │      (requires imports: ./client.tsp in tspconfig.yaml)             │
+ * └──────────────────────────────────────────────────────────────────────┘
+ */
+
 import {
   Model,
   createRule,
