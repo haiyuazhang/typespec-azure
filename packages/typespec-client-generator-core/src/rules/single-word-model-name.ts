@@ -201,7 +201,31 @@ Reply with ONLY the 5 names, one per line. No explanations, no numbering, no bac
 
   try {
     // >>> This is the LSP bridge call that ultimately reaches vscode.lm <<<
-    // The request goes: Language Server → LSP → VS Code Extension → vscode.lm → AI model
+    //
+    // Calling chain with file locations:
+    //
+    // HERE: connection.sendRequest("custom/chatCompletion", { messages, modelFamily })
+    //   │
+    //   ▼  (LSP JSON-RPC)
+    // core/packages/typespec-vscode/src/tsp-language-client.ts:313
+    //   lc.onRequest("custom/chatCompletion", (params) =>
+    //     sendLmChatRequest(params.messages, params.modelFamily, params.options, params.id))
+    //   │
+    //   ▼
+    // core/packages/typespec-vscode/src/lm/language-model.ts:56
+    //   lm.selectChatModels({ family: modelFamily })     ← vscode.lm called here
+    //   │
+    //   ▼
+    // core/packages/typespec-vscode/src/lm/language-model.ts:91
+    //   selectedModel.sendRequest(messages)               ← AI request sent here
+    //   │
+    //   ▼
+    // core/packages/typespec-vscode/src/lm/language-model.ts:104-107
+    //   for await (const chunk of response.text) {        ← AI response streamed here
+    //     fullResponse += chunk;
+    //   }
+    //   return fullResponse;                              ← returned back through LSP
+    //
     const result = await connection.sendRequest("custom/chatCompletion", {
       messages: [{ role: "user", message: prompt }],
       modelFamily: "claude-opus-4.6",
