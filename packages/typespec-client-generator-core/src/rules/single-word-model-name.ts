@@ -60,59 +60,49 @@ function isSingleWord(name: string): boolean {
 }
 
 /**
- * Call vscode.lm via the existing LSP custom request "custom/chatCompletion".
- *
- * The TypeSpec VS Code extension already registers a handler for this request
- * (see tsp-language-client.ts) that calls vscode.lm.selectChatModels and
- * forwards the prompt. The language server exposes the LSP connection on
- * globalThis.lspConnection (see server.ts:156).
- *
- * This means we can use vscode.lm from within the linter codefix — no new
- * plumbing needed!
+ * Fetch multiple AI name suggestions via the LSP bridge to vscode.lm.
  */
-async function fetchAiNameSuggestionViaVscodeLm(
+async function fetchAiNameSuggestions(
   modelName: string,
   namespaceName: string,
   modelSource: string,
-): Promise<string | undefined> {
-  console.log("@@@ I'm single word naming fixer (LSP bridge version)");
-  console.log(`@@@ Model: ${modelName}, Namespace: ${namespaceName}`);
+): Promise<string[]> {
+  console.log("@@@ Fetching AI suggestions via LSP bridge");
 
   const connection = (globalThis as any).lspConnection;
   if (!connection) {
-    console.log("@@@ No LSP connection available (running outside language server)");
-    return undefined;
+    console.log("@@@ No LSP connection available");
+    return [];
   }
 
-  const prompt = `You are a .NET SDK naming expert. A TypeSpec model is named "${modelName}" in namespace "${namespaceName}". This single-word name may collide with BCL or third-party types.
+  const prompt = `You are a .NET naming expert. A TypeSpec model named "${modelName}" in namespace "${namespaceName}" is a single word that may collide with BCL types.
 
-Here is the model definition:
+Model definition:
 ${modelSource}
 
-Suggest ONE better multi-word PascalCase name that:
-- Is descriptive and contextual
-- Avoids collisions with System.* types
-- Follows .NET naming conventions
-
-Reply with ONLY the new name, nothing else.`;
+Suggest exactly 5 better multi-word PascalCase names. Order by confidence.
+Reply with ONLY the 5 names, one per line. No explanations, no numbering, no backticks.`;
 
   try {
-    console.log("@@@ Sending custom/chatCompletion request to VS Code extension...");
     const result = await connection.sendRequest("custom/chatCompletion", {
       messages: [{ role: "user", message: prompt }],
-      modelFamily: "gpt-4.1",
-      id: `single-word-fix-${modelName}`,
+      modelFamily: "claude-opus-4.6",
+      id: `single-word-suggestions-${modelName}`,
     });
-    console.log(`@@@ AI response: ${result}`);
+    console.log(`@@@ AI response: '${result}'`);
 
-    const suggestion = typeof result === "string" ? result.trim() : undefined;
-    if (suggestion && /^[A-Z][a-zA-Z0-9]*$/.test(suggestion) && !isSingleWord(suggestion)) {
-      return suggestion;
-    }
-    return undefined;
+    if (typeof result !== "string" || !result.trim()) return [];
+
+    const suggestions = result
+      .split("\n")
+      .map((line: string) => line.trim().replace(/^`+|`+$/g, "").replace(/^\d+\.\s*/, "").trim())
+      .filter((name: string) => name && /^[A-Z][a-zA-Z0-9]*$/.test(name) && !isSingleWord(name));
+
+    console.log(`@@@ Parsed ${suggestions.length} valid suggestions: ${suggestions.join(", ")}`);
+    return suggestions;
   } catch (e: any) {
     console.log(`@@@ LSP request failed: ${e.message}`);
-    return undefined;
+    return [];
   }
 }
 
@@ -123,25 +113,25 @@ function extractModelSource(model: Model): string {
   if (model.node === undefined || model.node.kind !== SyntaxKind.ModelStatement) return "";
   const location = getSourceLocation(model.node);
   const text = location.file.text;
-  // Extract from "model Name {" to the closing "}"
   const start = model.node.pos;
   const end = model.node.end;
   return text.slice(start, end).trim();
 }
 
-function createAiClientNameCodeFix(model: Model, host: CompilerHost, csharpName: string) {
-  const namespaceName = model.namespace ? getNamespaceFullName(model.namespace) : "";
-  const modelSource = extractModelSource(model);
-
-  const codeFix: CodeFix = {
-    id: "ai-rename-single-word",
-    label: `Add @@clientName to client.tsp (AI-suggested)`,
+/**
+ * Create a codefix that writes @@clientName to client.tsp with a specific name.
+ */
+function createClientNameCodeFix(
+  model: Model,
+  host: CompilerHost,
+  newName: string,
+  index: number,
+): CodeFix {
+  return {
+    id: `ai-rename-single-word-${index}`,
+    label: `Rename to '${newName}' in client.tsp`,
     fix: (async (_fixContext: CodeFixContext): Promise<any> => {
       if (model.node === undefined) return [];
-
-      const aiName = await fetchAiNameSuggestionViaVscodeLm(csharpName, namespaceName, modelSource);
-      if (!aiName) return []; // No AI suggestion available
-
       const modelSourcePath = getSourceLocation(model.node).file.path;
       const dir = getDirectoryPath(modelSourcePath);
       const clientTspPath = resolvePath(dir, "client.tsp");
@@ -176,7 +166,7 @@ function createAiClientNameCodeFix(model: Model, host: CompilerHost, csharpName:
       const fqn = model.namespace
         ? `${getNamespaceFullName(model.namespace)}.${model.name}`
         : model.name;
-      textToAppend += `@@clientName(${fqn}, "${aiName}", "csharp");\n`;
+      textToAppend += `@@clientName(${fqn}, "${newName}", "csharp");\n`;
 
       const clientFile = createSourceFile(existingText, clientTspPath);
       const edit: InsertTextCodeFixEdit = {
@@ -187,6 +177,36 @@ function createAiClientNameCodeFix(model: Model, host: CompilerHost, csharpName:
       };
       return edit;
     }) as CodeFix["fix"],
+  };
+}
+
+/**
+ * Create a codefix that uses resolveCodefixes to fetch AI suggestions
+ * and present them as individual labeled options in the Ctrl+. menu.
+ */
+function createAiClientNameCodeFix(model: Model, host: CompilerHost, csharpName: string) {
+  const namespaceName = model.namespace ? getNamespaceFullName(model.namespace) : "";
+  const modelSource = extractModelSource(model);
+
+  const codeFix: CodeFix = {
+    id: "ai-rename-single-word",
+    label: "AI: Suggest multi-word names...",
+    fix: (async (): Promise<any> => {
+      // Fallback if resolveCodefixes wasn't called (e.g., CLI usage)
+      return [];
+    }) as CodeFix["fix"],
+    resolveCodefixes: async () => {
+      console.log("@@@ resolveCodefixes called — fetching AI suggestions");
+      const suggestions = await fetchAiNameSuggestions(csharpName, namespaceName, modelSource);
+      if (suggestions.length === 0) {
+        // Fallback: return a single codefix with a simple suffix
+        const fallback = `${namespaceName.split(".").pop() ?? "Service"}${csharpName}`;
+        return [createClientNameCodeFix(model, host, fallback, 0)];
+      }
+      return suggestions.map((name, i) =>
+        createClientNameCodeFix(model, host, name, i),
+      );
+    },
   };
   return codeFix;
 }
