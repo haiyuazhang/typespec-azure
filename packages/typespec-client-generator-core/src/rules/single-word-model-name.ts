@@ -416,6 +416,33 @@ export const singleWordModelNameRule = createRule({
         // Skip template declarations
         if (model.templateMapper !== undefined) return;
 
+        // >>> Why this rule lives in TCGC (not azure-core or an extension) <<<
+        //
+        // getLibraryName is a TCGC API that resolves the C#-specific name for a model.
+        // It provides three critical capabilities that other approaches lack:
+        //
+        // 1. LANGUAGE SCOPING: getLibraryName(ctx, model, "csharp") returns the name
+        //    specifically for C#. A model can have different names for different languages:
+        //      @clientName("TableDoc", "csharp")
+        //      @clientName("table_doc", "python")
+        //    Other approaches (e.g., walking model.decorators like the typespec PR #2 does)
+        //    would see both decorators and can't distinguish which one applies to .NET.
+        //
+        // 2. RESPECTS ALL OVERRIDE SOURCES: getLibraryName handles @clientName applied via:
+        //    - Direct decorator:     @clientName("NewName", "csharp") model Foo { }
+        //    - Augment decorator:    @@clientName(Foo, "NewName", "csharp")  (in client.tsp)
+        //    - Spread patterns, template instantiations, inherited names
+        //    Walking model.decorators manually would miss many of these.
+        //
+        // 3. FALSE POSITIVE PREVENTION: When client.tsp is imported (via tspconfig.yaml
+        //    imports: ./client.tsp), the @@clientName override is applied during compilation.
+        //    getLibraryName sees the resolved name and does NOT flag it — the yellow line
+        //    disappears. Without getLibraryName (e.g., in azure-core), model.name always
+        //    returns the raw TypeSpec name regardless of overrides, causing false positives.
+        //
+        // In azure-core, we'd need 100+ lines of fragile regex parsing of client.tsp to
+        // approximate what this single line does. See the azure-core experiment branch
+        // (haiyzhan/linter-no-request-suffix-in-azure-core-v1) for proof.
         const csharpName = getLibraryName(tcgcContext, model, "csharp");
 
         if (isSingleWord(csharpName)) {
