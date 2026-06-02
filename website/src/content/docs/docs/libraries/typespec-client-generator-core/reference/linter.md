@@ -21,8 +21,9 @@ Available ruleSets:
 
 ## Rules
 
-| Name                                                                                                       | Description                                                             |
-| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| [`@azure-tools/typespec-client-generator-core/require-client-suffix`](../rules/require-client-suffix.md)   | Client names should end with 'Client'.                                  |
-| [`@azure-tools/typespec-client-generator-core/property-name-conflict`](../rules/property-name-conflict.md) | Avoid naming conflicts between a property and a model of the same name. |
-| [`@azure-tools/typespec-client-generator-core/no-unnamed-types`](../rules/no-unnamed-types.md)             | Requires types to be named rather than defined anonymously or inline.   |
+| Name                                                                                                       | Description                                                                                     |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [`@azure-tools/typespec-client-generator-core/require-client-suffix`](../rules/require-client-suffix.md)   | Client names should end with 'Client'.                                                          |
+| [`@azure-tools/typespec-client-generator-core/property-name-conflict`](../rules/property-name-conflict.md) | Avoid naming conflicts between a property and a model of the same name.                         |
+| [`@azure-tools/typespec-client-generator-core/no-unnamed-types`](../rules/no-unnamed-types.md)             | Requires types to be named rather than defined anonymously or inline.                           |
+| [`@azure-tools/typespec-client-generator-core/no-request-suffix`](../rules/no-request-suffix.md)           | Model names ending with 'Request' should be renamed to 'Content' or another appropriate suffix. |
