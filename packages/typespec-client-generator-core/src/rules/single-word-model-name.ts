@@ -60,25 +60,30 @@ function isSingleWord(name: string): boolean {
 }
 
 /**
- * EXPERIMENT: Try to use vscode.lm directly from the linter codefix.
- * This will BUILD successfully (TypeScript resolves @types/vscode)
- * but CRASH at runtime (vscode module doesn't exist in the language server process).
+ * Call vscode.lm via the existing LSP custom request "custom/chatCompletion".
+ *
+ * The TypeSpec VS Code extension already registers a handler for this request
+ * (see tsp-language-client.ts) that calls vscode.lm.selectChatModels and
+ * forwards the prompt. The language server exposes the LSP connection on
+ * globalThis.lspConnection (see server.ts:156).
+ *
+ * This means we can use vscode.lm from within the linter codefix — no new
+ * plumbing needed!
  */
 async function fetchAiNameSuggestionViaVscodeLm(
   modelName: string,
   namespaceName: string,
   modelSource: string,
 ): Promise<string | undefined> {
-  // This import will CRASH at runtime with MODULE_NOT_FOUND
-  // because the codefix runs in the TypeSpec language server process,
-  // not in the VS Code extension host where vscode module is available.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const vscode = require("vscode") as any;
+  console.log("@@@ I'm single word naming fixer (LSP bridge version)");
+  console.log(`@@@ Model: ${modelName}, Namespace: ${namespaceName}`);
 
-  const models = await vscode.lm.selectChatModels({ family: "gpt-4.1" });
-  if (models.length === 0) return undefined;
+  const connection = (globalThis as any).lspConnection;
+  if (!connection) {
+    console.log("@@@ No LSP connection available (running outside language server)");
+    return undefined;
+  }
 
-  const chatModel = models[0];
   const prompt = `You are a .NET SDK naming expert. A TypeSpec model is named "${modelName}" in namespace "${namespaceName}". This single-word name may collide with BCL or third-party types.
 
 Here is the model definition:
@@ -91,19 +96,24 @@ Suggest ONE better multi-word PascalCase name that:
 
 Reply with ONLY the new name, nothing else.`;
 
-  const messages = [vscode.LanguageModelChatMessage.User(prompt)];
-  const response = await chatModel.sendRequest(messages);
+  try {
+    console.log("@@@ Sending custom/chatCompletion request to VS Code extension...");
+    const result = await connection.sendRequest("custom/chatCompletion", {
+      messages: [{ role: "user", message: prompt }],
+      modelFamily: "gpt-4.1",
+      id: `single-word-fix-${modelName}`,
+    });
+    console.log(`@@@ AI response: ${result}`);
 
-  let result = "";
-  for await (const chunk of response.text) {
-    result += chunk;
+    const suggestion = typeof result === "string" ? result.trim() : undefined;
+    if (suggestion && /^[A-Z][a-zA-Z0-9]*$/.test(suggestion) && !isSingleWord(suggestion)) {
+      return suggestion;
+    }
+    return undefined;
+  } catch (e: any) {
+    console.log(`@@@ LSP request failed: ${e.message}`);
+    return undefined;
   }
-
-  const suggestion = result.trim();
-  if (suggestion && /^[A-Z][a-zA-Z0-9]*$/.test(suggestion) && !isSingleWord(suggestion)) {
-    return suggestion;
-  }
-  return undefined;
 }
 
 /**
