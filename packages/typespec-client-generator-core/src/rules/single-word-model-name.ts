@@ -60,17 +60,25 @@ function isSingleWord(name: string): boolean {
 }
 
 /**
- * Call GitHub Models API to suggest a better multi-word name.
- * Falls back to undefined if no token or API error.
+ * EXPERIMENT: Try to use vscode.lm directly from the linter codefix.
+ * This will BUILD successfully (TypeScript resolves @types/vscode)
+ * but CRASH at runtime (vscode module doesn't exist in the language server process).
  */
-async function fetchAiNameSuggestion(
+async function fetchAiNameSuggestionViaVscodeLm(
   modelName: string,
   namespaceName: string,
   modelSource: string,
 ): Promise<string | undefined> {
-  const token = process.env.GITHUB_TOKEN;
-  if (!token) return undefined;
+  // This import will CRASH at runtime with MODULE_NOT_FOUND
+  // because the codefix runs in the TypeSpec language server process,
+  // not in the VS Code extension host where vscode module is available.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const vscode = require("vscode") as any;
 
+  const models = await vscode.lm.selectChatModels({ family: "gpt-4.1" });
+  if (models.length === 0) return undefined;
+
+  const chatModel = models[0];
   const prompt = `You are a .NET SDK naming expert. A TypeSpec model is named "${modelName}" in namespace "${namespaceName}". This single-word name may collide with BCL or third-party types.
 
 Here is the model definition:
@@ -83,31 +91,19 @@ Suggest ONE better multi-word PascalCase name that:
 
 Reply with ONLY the new name, nothing else.`;
 
-  try {
-    const response = await fetch("https://models.github.ai/inference/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4.1-nano",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 50,
-        temperature: 0.3,
-      }),
-    });
+  const messages = [vscode.LanguageModelChatMessage.User(prompt)];
+  const response = await chatModel.sendRequest(messages);
 
-    if (!response.ok) return undefined;
-    const data = (await response.json()) as any;
-    const suggestion = data.choices?.[0]?.message?.content?.trim();
-    if (suggestion && /^[A-Z][a-zA-Z0-9]*$/.test(suggestion) && !isSingleWord(suggestion)) {
-      return suggestion;
-    }
-    return undefined;
-  } catch {
-    return undefined;
+  let result = "";
+  for await (const chunk of response.text) {
+    result += chunk;
   }
+
+  const suggestion = result.trim();
+  if (suggestion && /^[A-Z][a-zA-Z0-9]*$/.test(suggestion) && !isSingleWord(suggestion)) {
+    return suggestion;
+  }
+  return undefined;
 }
 
 /**
@@ -133,7 +129,7 @@ function createAiClientNameCodeFix(model: Model, host: CompilerHost, csharpName:
     fix: (async (_fixContext: CodeFixContext): Promise<any> => {
       if (model.node === undefined) return [];
 
-      const aiName = await fetchAiNameSuggestion(csharpName, namespaceName, modelSource);
+      const aiName = await fetchAiNameSuggestionViaVscodeLm(csharpName, namespaceName, modelSource);
       if (!aiName) return []; // No AI suggestion available
 
       const modelSourcePath = getSourceLocation(model.node).file.path;
