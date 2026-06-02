@@ -1,0 +1,5 @@
+imports:
+  - ./client.tsp
+linter:
+  extends:
+    - "@azure-tools/typespec-azure-rulesets/resource-manager"
