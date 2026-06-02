@@ -153,6 +153,28 @@ function isSingleWord(name: string): boolean {
 
 /**
  * Fetch multiple AI name suggestions via the LSP bridge to vscode.lm.
+ *
+ * This is where vscode.lm is called — indirectly through the LSP bridge:
+ *
+ *   Language Server (this code)
+ *     │
+ *     │  connection.sendRequest("custom/chatCompletion", { messages, modelFamily })
+ *     │
+ *     ▼
+ *   VS Code Extension (tsp-language-client.ts:313)
+ *     │
+ *     │  lc.onRequest("custom/chatCompletion", params =>
+ *     │    sendLmChatRequest(params.messages, params.modelFamily, ...))
+ *     │
+ *     ▼
+ *   sendLmChatRequest (lm/language-model.ts:19)
+ *     │
+ *     │  vscode.lm.selectChatModels({ family: modelFamily })  ← vscode.lm is called HERE
+ *     │  model.sendRequest(messages)                          ← AI request sent HERE
+ *     │  for await (chunk of response.text) { ... }           ← AI response streamed HERE
+ *     │
+ *     ▼
+ *   Returns string response back through LSP to this function
  */
 async function fetchAiNameSuggestions(
   modelName: string,
@@ -161,6 +183,8 @@ async function fetchAiNameSuggestions(
 ): Promise<string[]> {
   console.log("@@@ Fetching AI suggestions via LSP bridge");
 
+  // globalThis.lspConnection is set by the TypeSpec language server (server.ts:156)
+  // It's the LSP JSON-RPC connection between the language server and VS Code
   const connection = (globalThis as any).lspConnection;
   if (!connection) {
     console.log("@@@ No LSP connection available");
@@ -176,6 +200,8 @@ Suggest exactly 5 better multi-word PascalCase names. Order by confidence.
 Reply with ONLY the 5 names, one per line. No explanations, no numbering, no backticks.`;
 
   try {
+    // >>> This is the LSP bridge call that ultimately reaches vscode.lm <<<
+    // The request goes: Language Server → LSP → VS Code Extension → vscode.lm → AI model
     const result = await connection.sendRequest("custom/chatCompletion", {
       messages: [{ role: "user", message: prompt }],
       modelFamily: "claude-opus-4.6",
